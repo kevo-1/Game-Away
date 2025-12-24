@@ -1,0 +1,7 @@
+{
+	"$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+	"name": "game-away",
+	"version": "1.0.0",
+	"description": "Keyboard and mouse input mirroring over network",
+	"dependencies": ["ixwebsocket", "nlohmann-json"]
+}
