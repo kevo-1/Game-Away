@@ -61,7 +61,7 @@ For remote connections over the internet, I recommend using [Tailscale](https://
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-username/Game-Away.git
+git clone https://github.com/kevo-1/Game-Away.git
 cd Game-Away
 
 # Run the build script
