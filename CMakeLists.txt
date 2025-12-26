@@ -29,6 +29,7 @@ set(SOURCES
     src/server/input_replay.cpp
     src/client/client.cpp
     src/client/input_hook.cpp
+    src/client/overlay_window.cpp
 )
 
 # Create executable

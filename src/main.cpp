@@ -2,6 +2,7 @@
 #include "utils/token.hpp"
 #include "server/server.hpp"
 #include "client/client.hpp"
+#include "client/overlay_window.hpp"
 
 #include <ixwebsocket/IXNetSystem.h>
 #include <iostream>
@@ -15,8 +16,9 @@ using namespace GameAway;
 std::atomic<bool> g_paused{false};
 std::atomic<bool> g_running{true};
 
-// Global hotkey ID
+// Global hotkey IDs
 constexpr int HOTKEY_PAUSE = 1;
+constexpr int HOTKEY_OVERLAY = 2;
 
 void printHeader() {
     std::cout << "\n";
@@ -125,6 +127,7 @@ void runClient() {
     }
     
     Client client;
+    OverlayWindow overlay;
     
     client.setStatusCallback([](const std::string& status) {
         std::cout << "\n[STATUS] " << status << "\n";
@@ -138,22 +141,28 @@ void runClient() {
     }
     
     std::cout << "\nConnected! Input mirroring active.\n";
-    std::cout << "Press Ctrl+Shift+P to pause/resume. Ctrl+C to exit.\n\n";
+    std::cout << "Press Ctrl+Shift+P to pause/resume.\n";
+    std::cout << "Press Ctrl+Shift+L to toggle transparent overlay. Ctrl+C to exit.\n\n";
     
-    // Register hotkey
+    // Register hotkeys
     RegisterHotKey(nullptr, HOTKEY_PAUSE, MOD_CONTROL | MOD_SHIFT, 'P');
+    RegisterHotKey(nullptr, HOTKEY_OVERLAY, MOD_CONTROL | MOD_SHIFT, 'L');
     
     MSG msg;
     while (g_running.load() && client.isConnected()) {
         // Check for hotkey
         if (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
-            if (msg.message == WM_HOTKEY && msg.wParam == HOTKEY_PAUSE) {
-                if (g_paused.load()) {
-                    g_paused.store(false);
-                    client.resume();
-                } else {
-                    g_paused.store(true);
-                    client.pause();
+            if (msg.message == WM_HOTKEY) {
+                if (msg.wParam == HOTKEY_PAUSE) {
+                    if (g_paused.load()) {
+                        g_paused.store(false);
+                        client.resume();
+                    } else {
+                        g_paused.store(true);
+                        client.pause();
+                    }
+                } else if (msg.wParam == HOTKEY_OVERLAY) {
+                    overlay.toggle();
                 }
             }
         }
@@ -163,6 +172,7 @@ void runClient() {
     }
     
     UnregisterHotKey(nullptr, HOTKEY_PAUSE);
+    UnregisterHotKey(nullptr, HOTKEY_OVERLAY);
     client.disconnect();
 }
 

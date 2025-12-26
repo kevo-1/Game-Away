@@ -16,6 +16,7 @@ constexpr size_t TOKEN_LENGTH = 6;
 constexpr int PAUSE_MODIFIER_CTRL = 0x0002;  // MOD_CONTROL
 constexpr int PAUSE_MODIFIER_SHIFT = 0x0004; // MOD_SHIFT
 constexpr int PAUSE_KEY = 0x50;              // 'P' key
+constexpr int OVERLAY_KEY = 0x4C;            // 'L' key
 
 // Performance
 constexpr int MAX_LATENCY_MS = 200;
