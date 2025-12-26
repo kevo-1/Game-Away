@@ -24,6 +24,7 @@ constexpr int MAX_LATENCY_MS = 200;
 // Message types
 namespace MsgType {
     constexpr const char* CONNECT = "connect";
+    constexpr const char* DISCONNECT = "disconnect";  // Graceful close notification
     constexpr const char* KEY = "key";
     constexpr const char* MOUSE = "mouse";
     constexpr const char* PAUSE = "pause";

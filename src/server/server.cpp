@@ -54,7 +54,20 @@ bool Server::start() {
 void Server::stop() {
     if (!m_running.load()) return;
     
+    // Send graceful disconnect notification to connected client
+    if (m_clientWebSocket && m_connected.load()) {
+        try {
+            json msg;
+            msg["type"] = MsgType::DISCONNECT;
+            m_clientWebSocket->send(msg.dump());
+        } catch (...) {
+            // Ignore send errors during shutdown
+        }
+    }
+    
     m_running.store(false);
+    m_connected.store(false);
+    m_clientWebSocket = nullptr;
     
     if (m_server) {
         m_server->stop();
@@ -64,10 +77,24 @@ void Server::stop() {
 
 void Server::pause() {
     m_paused.store(true);
+    
+    // Notify client that server has paused
+    if (m_clientWebSocket && m_connected.load()) {
+        json msg;
+        msg["type"] = MsgType::PAUSE;
+        m_clientWebSocket->send(msg.dump());
+    }
 }
 
 void Server::resume() {
     m_paused.store(false);
+    
+    // Notify client that server has resumed
+    if (m_clientWebSocket && m_connected.load()) {
+        json msg;
+        msg["type"] = MsgType::RESUME;
+        m_clientWebSocket->send(msg.dump());
+    }
 }
 
 void Server::handleMessage(std::shared_ptr<ix::ConnectionState> connectionState,
@@ -94,6 +121,7 @@ void Server::handleMessage(std::shared_ptr<ix::ConnectionState> connectionState,
                     
                     if (approved) {
                         m_connected.store(true);
+                        m_clientWebSocket = &webSocket; // Store reference to client
                         json response;
                         response["type"] = MsgType::ACCEPT;
                         webSocket.send(response.dump());
@@ -134,6 +162,12 @@ void Server::handleMessage(std::shared_ptr<ix::ConnectionState> connectionState,
                 m_paused.store(false);
                 std::cout << "\n[INFO] Resumed by client" << std::endl;
             }
+            else if (type == MsgType::DISCONNECT) {
+                // Client is closing gracefully
+                std::cout << "\n[INFO] Client disconnecting gracefully..." << std::endl;
+                m_connected.store(false);
+                m_clientWebSocket = nullptr;
+            }
             
         } catch (const std::exception& e) {
             std::cerr << "[ERROR] " << e.what() << std::endl;
@@ -142,6 +176,7 @@ void Server::handleMessage(std::shared_ptr<ix::ConnectionState> connectionState,
     else if (msg->type == ix::WebSocketMessageType::Close) {
         std::cout << "\n[INFO] Client disconnected" << std::endl;
         m_connected.store(false);
+        m_clientWebSocket = nullptr;
     }
 }
 
@@ -153,7 +188,8 @@ bool Server::validateConnection(const std::string& encryptedData, std::string& p
         json j = json::parse(decrypted);
         pcName = j["pcName"].get<std::string>();
         return true;
-    } catch (...) {
+    } catch (const std::exception& e) {
+        std::cerr << "[ERROR] Failed to parse connection data: " << e.what() << std::endl;
         return false;
     }
 }

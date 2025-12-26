@@ -2,12 +2,17 @@
 
 namespace GameAway {
 
+// Static instance for hook callback
+OverlayWindow* OverlayWindow::s_instance = nullptr;
+
 OverlayWindow::OverlayWindow() {
+    s_instance = this;
     registerWindowClass();
 }
 
 OverlayWindow::~OverlayWindow() {
     hide();
+    s_instance = nullptr;
 }
 
 bool OverlayWindow::registerWindowClass() {
@@ -73,6 +78,75 @@ bool OverlayWindow::createWindow() {
     return true;
 }
 
+void OverlayWindow::installKeyboardHook() {
+    if (m_hookRunning.load()) {
+        return; // Already running
+    }
+    
+    m_hookRunning.store(true);
+    m_hookThread = std::thread(&OverlayWindow::hookThreadProc, this);
+}
+
+void OverlayWindow::uninstallKeyboardHook() {
+    if (!m_hookRunning.load()) {
+        return;
+    }
+    
+    m_hookRunning.store(false);
+    
+    // Post quit message to break the hook's message loop
+    if (m_hookThread.joinable()) {
+        auto handle = reinterpret_cast<HANDLE>(m_hookThread.native_handle());
+        PostThreadMessage(GetThreadId(handle), WM_QUIT, 0, 0);
+        m_hookThread.join();
+    }
+}
+
+void OverlayWindow::hookThreadProc() {
+    // Install keyboard hook in this thread
+    m_keyboardHook = SetWindowsHookExW(
+        WH_KEYBOARD_LL,
+        keyboardHookProc,
+        GetModuleHandle(nullptr),
+        0
+    );
+    
+    if (!m_keyboardHook) {
+        m_hookRunning.store(false);
+        return;
+    }
+    
+    // Message loop for the hook
+    MSG msg;
+    while (m_hookRunning.load() && GetMessage(&msg, nullptr, 0, 0) > 0) {
+        TranslateMessage(&msg);
+        DispatchMessage(&msg);
+    }
+    
+    // Cleanup
+    if (m_keyboardHook) {
+        UnhookWindowsHookEx(m_keyboardHook);
+        m_keyboardHook = nullptr;
+    }
+}
+
+LRESULT CALLBACK OverlayWindow::keyboardHookProc(int nCode, WPARAM wParam, LPARAM lParam) {
+    if (nCode >= 0 && s_instance && s_instance->m_visible.load()) {
+        KBDLLHOOKSTRUCT* kbd = reinterpret_cast<KBDLLHOOKSTRUCT*>(lParam);
+        
+        // Block Windows key, Alt+Tab, Alt+Esc, etc.
+        if (kbd->vkCode == VK_LWIN || kbd->vkCode == VK_RWIN ||
+            kbd->vkCode == VK_APPS ||  // Application/Menu key
+            (kbd->vkCode == VK_TAB && (kbd->flags & LLKHF_ALTDOWN)) ||  // Alt+Tab
+            (kbd->vkCode == VK_ESCAPE && (kbd->flags & LLKHF_ALTDOWN))) {  // Alt+Esc
+            // Block these keys by returning 1 (don't call next hook)
+            return 1;
+        }
+    }
+    
+    return CallNextHookEx(nullptr, nCode, wParam, lParam);
+}
+
 bool OverlayWindow::show() {
     if (m_visible.load()) {
         return true; // Already visible
@@ -86,14 +160,20 @@ bool OverlayWindow::show() {
     ShowWindow(m_hwnd, SW_SHOWNOACTIVATE);
     UpdateWindow(m_hwnd);
     
+    // Install keyboard hook to block system keys
+    installKeyboardHook();
+    
     m_visible.store(true);
     return true;
 }
 
 void OverlayWindow::hide() {
-    if (!m_visible.load()) {
+    if (!m_visible.load() && m_hwnd == nullptr) {
         return; // Already hidden
     }
+    
+    // Uninstall keyboard hook first
+    uninstallKeyboardHook();
     
     if (m_hwnd != nullptr) {
         DestroyWindow(m_hwnd);

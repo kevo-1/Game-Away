@@ -1,6 +1,7 @@
 #include "input_hook.hpp"
 #include <Windows.h>
 #include <chrono>
+#include <iostream>
 
 namespace GameAway {
 
@@ -32,17 +33,35 @@ bool InputHook::start(InputCallback callback) {
 }
 
 void InputHook::stop() {
-    if (!m_running.load()) return;
+    std::cerr << "[DEBUG] InputHook::stop() called" << std::endl;
+    if (!m_running.load()) {
+        std::cerr << "[DEBUG] InputHook::stop() - not running, returning early" << std::endl;
+        return;
+    }
     
     m_running.store(false);
+    std::cerr << "[DEBUG] InputHook::stop() - m_running set to false" << std::endl;
     
-    // Post quit message to break message loop
-    auto handle = reinterpret_cast<HANDLE>(m_messageThread.native_handle());
-    PostThreadMessage(GetThreadId(handle), WM_QUIT, 0, 0);
+    // Post quit message to break message loop using stored thread ID
+    DWORD threadId = m_messageThreadId.load();
+    if (threadId != 0) {
+        std::cerr << "[DEBUG] InputHook::stop() - posting WM_QUIT to thread " << threadId << "..." << std::endl;
+        BOOL postResult = PostThreadMessage(threadId, WM_QUIT, 0, 0);
+        std::cerr << "[DEBUG] InputHook::stop() - PostThreadMessage result: " << postResult << std::endl;
+    } else {
+        std::cerr << "[DEBUG] InputHook::stop() - no valid thread ID stored" << std::endl;
+    }
     
     if (m_messageThread.joinable()) {
+        std::cerr << "[DEBUG] InputHook::stop() - joining message thread..." << std::endl;
         m_messageThread.join();
+        std::cerr << "[DEBUG] InputHook::stop() - message thread joined" << std::endl;
+    } else {
+        std::cerr << "[DEBUG] InputHook::stop() - message thread not joinable" << std::endl;
     }
+    
+    m_messageThreadId.store(0);
+    std::cerr << "[DEBUG] InputHook::stop() complete" << std::endl;
 }
 
 void InputHook::pause() {
@@ -54,6 +73,10 @@ void InputHook::resume() {
 }
 
 void InputHook::messageLoop() {
+    // Store this thread's ID immediately so stop() can post WM_QUIT to us
+    m_messageThreadId.store(GetCurrentThreadId());
+    std::cerr << "[DEBUG] InputHook::messageLoop() started (threadId: " << m_messageThreadId.load() << ")" << std::endl;
+    
     // Install hooks (must be done from the thread that will run the message loop)
     s_keyboardHook = SetWindowsHookExW(
         WH_KEYBOARD_LL,
@@ -70,9 +93,12 @@ void InputHook::messageLoop() {
     );
     
     if (!s_keyboardHook || !s_mouseHook) {
+        std::cerr << "[DEBUG] InputHook::messageLoop() - failed to install hooks" << std::endl;
         m_running.store(false);
         return;
     }
+    
+    std::cerr << "[DEBUG] InputHook::messageLoop() - hooks installed, entering message loop" << std::endl;
     
     // Message loop
     MSG msg;
@@ -80,6 +106,8 @@ void InputHook::messageLoop() {
         TranslateMessage(&msg);
         DispatchMessage(&msg);
     }
+    
+    std::cerr << "[DEBUG] InputHook::messageLoop() - exited message loop (m_running=" << m_running.load() << ")" << std::endl;
     
     // Cleanup hooks
     if (s_keyboardHook) {
@@ -128,10 +156,6 @@ LRESULT CALLBACK InputHook::mouseProc(int nCode, WPARAM wParam, LPARAM lParam) {
     if (nCode >= 0 && s_instance && !s_instance->m_paused.load()) {
         MSLLHOOKSTRUCT* mouse = reinterpret_cast<MSLLHOOKSTRUCT*>(lParam);
         
-        // Throttle mouse move events (max ~60 updates/second)
-        static auto lastMoveTime = std::chrono::steady_clock::now();
-        static constexpr auto MOUSE_THROTTLE_MS = std::chrono::milliseconds(16);
-        
         InputEvent event{};
         event.x = mouse->pt.x;
         event.y = mouse->pt.y;
@@ -143,16 +167,8 @@ LRESULT CALLBACK InputHook::mouseProc(int nCode, WPARAM wParam, LPARAM lParam) {
         
         switch (wParam) {
             case WM_MOUSEMOVE:
-            {
-                auto now = std::chrono::steady_clock::now();
-                if (now - lastMoveTime < MOUSE_THROTTLE_MS) {
-                    shouldSend = false;  // Throttle - skip this event
-                } else {
-                    lastMoveTime = now;
-                    event.type = InputEventType::MouseMove;
-                }
+                event.type = InputEventType::MouseMove;
                 break;
-            }
             case WM_LBUTTONDOWN:
                 event.type = InputEventType::MouseButtonDown;
                 event.button = 0;

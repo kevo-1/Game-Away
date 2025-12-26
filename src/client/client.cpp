@@ -82,17 +82,49 @@ bool Client::connect(const std::string& serverIp, uint16_t port, const std::stri
                     connectionResult.store(false);
                     connectionDone.store(true);
                 }
-            } catch (...) {
-                // Ignore parse errors
+                else if (type == MsgType::PAUSE) {
+                    // Server requested pause
+                    m_paused.store(true);
+                    if (m_inputHook && m_inputHook->isRunning()) {
+                        m_inputHook->pause();
+                    }
+                    sendStatus("Server paused input mirroring");
+                }
+                else if (type == MsgType::RESUME) {
+                    // Server requested resume
+                    m_paused.store(false);
+                    if (m_inputHook && m_inputHook->isRunning()) {
+                        m_inputHook->resume();
+                    }
+                    sendStatus("Server resumed input mirroring");
+                }
+                else if (type == MsgType::DISCONNECT) {
+                    // Server is closing gracefully
+                    m_connected.store(false);
+                    if (m_inputHook && m_inputHook->isRunning()) {
+                        m_inputHook->stop();
+                    }
+                    sendStatus("Server closed the connection");
+                    // Close our end of the WebSocket to complete the disconnect
+                    if (m_webSocket) {
+                        m_webSocket->close();
+                    }
+                }
+            } catch (const std::exception& e) {
+                // Log parse errors for debugging (silent in production)
+                std::cerr << "[DEBUG] Message parse error: " << e.what() << std::endl;
             }
         }
         else if (msg->type == ix::WebSocketMessageType::Close) {
             m_connected.store(false);
-            m_inputHook->stop();
+            if (m_inputHook) {
+                m_inputHook->stop();
+            }
             sendStatus("Disconnected from server");
             connectionDone.store(true);
         }
         else if (msg->type == ix::WebSocketMessageType::Error) {
+            m_connected.store(false);
             sendStatus("Connection error: " + msg->errorInfo.reason);
             connectionDone.store(true);
         }
@@ -117,19 +149,44 @@ bool Client::connect(const std::string& serverIp, uint16_t port, const std::stri
 }
 
 void Client::disconnect() {
-    m_inputHook->stop();
+    std::cerr << "[DEBUG] Client::disconnect() called" << std::endl;
+    
+    // Send graceful disconnect notification to server
+    if (m_webSocket && m_connected.load()) {
+        try {
+            std::cerr << "[DEBUG] Sending DISCONNECT message to server..." << std::endl;
+            json msg;
+            msg["type"] = MsgType::DISCONNECT;
+            m_webSocket->send(msg.dump());
+            std::cerr << "[DEBUG] DISCONNECT message sent" << std::endl;
+        } catch (...) {
+            std::cerr << "[DEBUG] Failed to send DISCONNECT message" << std::endl;
+        }
+    }
+    
+    if (m_inputHook && m_inputHook->isRunning()) {
+        std::cerr << "[DEBUG] Stopping input hook..." << std::endl;
+        m_inputHook->stop();
+        std::cerr << "[DEBUG] Input hook stopped" << std::endl;
+    }
     
     if (m_webSocket) {
+        std::cerr << "[DEBUG] Stopping WebSocket..." << std::endl;
         m_webSocket->stop();
+        std::cerr << "[DEBUG] WebSocket stopped, resetting..." << std::endl;
         m_webSocket.reset();
+        std::cerr << "[DEBUG] WebSocket reset complete" << std::endl;
     }
     
     m_connected.store(false);
+    std::cerr << "[DEBUG] Client::disconnect() complete" << std::endl;
 }
 
 void Client::pause() {
     m_paused.store(true);
-    m_inputHook->pause();
+    if (m_inputHook && m_inputHook->isRunning()) {
+        m_inputHook->pause();
+    }
     
     if (m_webSocket && m_connected.load()) {
         json msg;
@@ -140,7 +197,9 @@ void Client::pause() {
 
 void Client::resume() {
     m_paused.store(false);
-    m_inputHook->resume();
+    if (m_inputHook && m_inputHook->isRunning()) {
+        m_inputHook->resume();
+    }
     
     if (m_webSocket && m_connected.load()) {
         json msg;

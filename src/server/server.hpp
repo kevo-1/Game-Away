@@ -51,6 +51,7 @@ private:
     std::atomic<bool> m_paused{false};
     std::atomic<bool> m_connected{false};
     std::atomic<uint64_t> m_eventsReceived{0};
+    ix::WebSocket* m_clientWebSocket = nullptr; // Pointer to connected client
     
     void handleMessage(std::shared_ptr<ix::ConnectionState> connectionState,
                        ix::WebSocket& webSocket,

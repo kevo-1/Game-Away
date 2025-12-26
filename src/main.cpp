@@ -15,6 +15,7 @@ using namespace GameAway;
 
 std::atomic<bool> g_paused{false};
 std::atomic<bool> g_running{true};
+std::atomic<bool> g_waitingForInput{false}; // Pause status output when waiting for user input
 
 // Global hotkey IDs
 constexpr int HOTKEY_PAUSE = 1;
@@ -22,50 +23,52 @@ constexpr int HOTKEY_OVERLAY = 2;
 
 void printHeader() {
     std::cout << "\n";
-    std::cout << "  ╔═══════════════════════════════════════╗\n";
-    std::cout << "  ║         GAME-AWAY v1.0.0              ║\n";
-    std::cout << "  ║   Input Mirroring for Windows         ║\n";
-    std::cout << "  ╚═══════════════════════════════════════╝\n";
+    std::cout << "  GAME-AWAY v1.0.0\n";
+    std::cout << "  Input Mirroring for Windows\n";
+    std::cout << "  ─────────────────────────────\n";
     std::cout << "\n";
 }
 
 void printStatus(bool isServer, bool paused, uint64_t events) {
-    static uint64_t lastEvents = 0;
-    static bool lastPaused = false;
-    
-    // Only update if something changed
-    if (events != lastEvents || paused != lastPaused) {
-        lastEvents = events;
-        lastPaused = paused;
-        
-        std::cout << "\r[" << (paused ? "PAUSED" : "ACTIVE") << "] ";
-        std::cout << (isServer ? "Events received: " : "Events sent: ") << events;
-        std::cout << " | Ctrl+Shift+P to " << (paused ? "resume" : "pause");
-        std::cout << "          " << std::flush;
+    // Don't print status if waiting for user input
+    if (g_waitingForInput.load()) {
+        return;
     }
+    
+    std::cout << "\r";
+    if (paused) {
+        std::cout << "[PAUSED] ";
+    } else {
+        std::cout << "[ACTIVE] ";
+    }
+    std::cout << (isServer ? "Received: " : "Sent: ") << events << " events";
+    std::cout << "                    " << std::flush;
 }
 
 void runServer() {
     std::string token = generateToken(TOKEN_LENGTH);
     
-    std::cout << "╔═══════════════════════════════════════╗\n";
-    std::cout << "║              SERVER MODE              ║\n";
-    std::cout << "╠═══════════════════════════════════════╣\n";
-    std::cout << "║  Connection Token: " << token << "    ║\n";
-    std::cout << "╚═══════════════════════════════════════╝\n";
-    std::cout << "\nShare this token with the client.\n";
+    std::cout << "SERVER MODE\n";
+    std::cout << "───────────────────────\n";
+    std::cout << "Connection Token: \033[32m" << token << "\033[0m\n";  // Green color
+    std::cout << "Share this token with the client.\n";
     std::cout << "Waiting for connection on port " << DEFAULT_PORT << "...\n\n";
     
     Server server(DEFAULT_PORT);
     server.setToken(token);
     
     server.setApprovalCallback([](const std::string& pcName) {
-        std::cout << "\n[CONNECTION REQUEST]\n";
+        g_waitingForInput.store(true);
+        
+        std::cout << "\n\n[CONNECTION REQUEST]\n";
         std::cout << "PC Name: " << pcName << "\n";
-        std::cout << "Accept connection? (y/n): ";
+        std::cout << "Accept connection? (y/n): " << std::flush;
         
         char response;
         std::cin >> response;
+        
+        g_waitingForInput.store(false);
+        std::cout << "\n"; // New line after input
         
         return (response == 'y' || response == 'Y');
     });
@@ -104,9 +107,8 @@ void runServer() {
 }
 
 void runClient() {
-    std::cout << "╔═══════════════════════════════════════╗\n";
-    std::cout << "║              CLIENT MODE              ║\n";
-    std::cout << "╚═══════════════════════════════════════╝\n\n";
+    std::cout << "CLIENT MODE\n";
+    std::cout << "───────────────────────\n\n";
     
     std::string serverIp;
     std::string token;
@@ -129,8 +131,18 @@ void runClient() {
     Client client;
     OverlayWindow overlay;
     
-    client.setStatusCallback([](const std::string& status) {
+    // Flag to track if we should exit due to disconnection
+    std::atomic<bool> shouldExit{false};
+    
+    client.setStatusCallback([&shouldExit](const std::string& status) {
         std::cout << "\n[STATUS] " << status << "\n";
+        // If connection was closed or server closed, signal immediate exit
+        if (status.find("closed") != std::string::npos || 
+            status.find("Disconnected") != std::string::npos ||
+            status.find("error") != std::string::npos) {
+            shouldExit.store(true);
+            g_running.store(false);
+        }
     });
     
     std::cout << "\nConnecting to " << serverIp << ":" << DEFAULT_PORT << "...\n";
@@ -142,14 +154,15 @@ void runClient() {
     
     std::cout << "\nConnected! Input mirroring active.\n";
     std::cout << "Press Ctrl+Shift+P to pause/resume.\n";
-    std::cout << "Press Ctrl+Shift+L to toggle transparent overlay. Ctrl+C to exit.\n\n";
+    std::cout << "Press Ctrl+Shift+L to toggle transparent overlay.\nPress Ctrl+C to exit.\n\n";
     
     // Register hotkeys
     RegisterHotKey(nullptr, HOTKEY_PAUSE, MOD_CONTROL | MOD_SHIFT, 'P');
     RegisterHotKey(nullptr, HOTKEY_OVERLAY, MOD_CONTROL | MOD_SHIFT, 'L');
     
     MSG msg;
-    while (g_running.load() && client.isConnected()) {
+    std::cerr << "[DEBUG] Entering main client loop" << std::endl;
+    while (g_running.load() && client.isConnected() && !shouldExit.load()) {
         // Check for hotkey
         if (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
             if (msg.message == WM_HOTKEY) {
@@ -167,13 +180,35 @@ void runClient() {
             }
         }
         
-        printStatus(false, g_paused.load(), client.getEventsSent());
+        // Sync g_paused with client state (which may be updated by server)
+        g_paused.store(client.isPaused());
+        printStatus(false, client.isPaused(), client.getEventsSent());
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
     
+    std::cerr << "[DEBUG] Exited main client loop (g_running=" << g_running.load() 
+              << ", isConnected=" << client.isConnected() 
+              << ", shouldExit=" << shouldExit.load() << ")" << std::endl;
+    
+    std::cerr << "[DEBUG] Unregistering hotkeys..." << std::endl;
     UnregisterHotKey(nullptr, HOTKEY_PAUSE);
     UnregisterHotKey(nullptr, HOTKEY_OVERLAY);
+    std::cerr << "[DEBUG] Hotkeys unregistered" << std::endl;
+    
+    // Ensure overlay is closed before exiting (prevents black screen on Ctrl+C)
+    std::cerr << "[DEBUG] Hiding overlay..." << std::endl;
+    overlay.hide();
+    std::cerr << "[DEBUG] Overlay hidden" << std::endl;
+    
+    // Print exit reason
+    if (!client.isConnected()) {
+        std::cout << "\n\nConnection closed. Exiting...\n";
+    }
+    
+    std::cerr << "[DEBUG] Calling client.disconnect()..." << std::endl;
     client.disconnect();
+    std::cerr << "[DEBUG] client.disconnect() returned" << std::endl;
+    return;
 }
 
 BOOL WINAPI ConsoleHandler(DWORD signal) {
@@ -191,6 +226,12 @@ int main() {
     // Setup console handling
     SetConsoleCtrlHandler(ConsoleHandler, TRUE);
     SetConsoleOutputCP(CP_UTF8);
+    
+    // Enable ANSI escape codes for colored output on Windows
+    HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
+    DWORD consoleMode = 0;
+    GetConsoleMode(hConsole, &consoleMode);
+    SetConsoleMode(hConsole, consoleMode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
     
     printHeader();
     

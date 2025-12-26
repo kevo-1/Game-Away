@@ -60,6 +60,7 @@ private:
     std::atomic<bool> m_running{false};
     std::atomic<bool> m_paused{false};
     std::thread m_messageThread;
+    std::atomic<DWORD> m_messageThreadId{0};  // Store thread ID for reliable WM_QUIT posting
     
     void messageLoop();
     
